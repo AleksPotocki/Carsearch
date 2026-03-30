@@ -1,21 +1,36 @@
+"""
+Scraper for Honda CR-V PHEV listings on Otomoto.pl.
+
+Uses Playwright (headless Chromium) because Otomoto renders listings client-side.
+Results are stored in the shared SQLite database alongside dealer scraper results.
+"""
+
 import csv
 import os
 import random
 import re
 import sqlite3
-import statistics
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Optional
+from typing import Optional
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
-SEARCH_URL = "https://www.otomoto.pl/osobowe/honda/cr-v/hybrydowy-plug-in"
-OUTPUT_DIR = os.path.join("output")
-DB_PATH = os.path.join(OUTPUT_DIR, "listings.db")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+DB_PATH = os.path.join(OUTPUT_DIR, "otomoto.db")
+
+SEARCH_URL = (
+    "https://www.otomoto.pl/osobowe/honda/cr-v/od-2023"
+    "?search%5Bfilter_enum_damaged%5D=0"
+    "&search%5Bfilter_enum_fuel_type%5D=plugin-hybrid"
+)
 
 
 @dataclass(frozen=True)
@@ -25,21 +40,16 @@ class Listing:
     year: Optional[int]
     mileage_km: Optional[int]
     location: str
-    seller_type: str  # "dealer" | "private" | "unknown"
     url: str
-    date_scraped_utc: str  # ISO8601
+    date_scraped_utc: str
 
 
-def ensure_output_dir() -> None:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def random_delay_seconds() -> float:
-    return random.uniform(2.0, 3.0)
 
 
 def parse_int(value: str) -> Optional[int]:
@@ -52,8 +62,7 @@ def parse_int(value: str) -> Optional[int]:
         return None
 
 
-def parse_price_pln(text: str) -> Optional[int]:
-    # Examples: "189 900 PLN", "189 900 zł", "Zapytaj o cenę"
+def parse_price(text: str) -> Optional[int]:
     if not text:
         return None
     lowered = text.lower()
@@ -62,113 +71,38 @@ def parse_price_pln(text: str) -> Optional[int]:
     return parse_int(text)
 
 
-def parse_mileage_km(text: str) -> Optional[int]:
-    # Examples: "12 345 km"
-    return parse_int(text)
-
-
 def parse_year(text: str) -> Optional[int]:
     year = parse_int(text)
-    if year and 1950 <= year <= datetime.now().year + 1:
+    if year and 2023 <= year <= datetime.now().year + 1:
         return year
     return None
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS listings (
-          url TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          price_pln INTEGER,
-          year INTEGER,
-          mileage_km INTEGER,
-          location TEXT,
-          seller_type TEXT,
-          date_scraped_utc TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_listings_price ON listings(price_pln)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_listings_year ON listings(year)")
-    conn.commit()
+# ---------------------------------------------------------------------------
+# Cookie consent
+# ---------------------------------------------------------------------------
 
-
-def upsert_listing(conn: sqlite3.Connection, l: Listing) -> None:
-    conn.execute(
-        """
-        INSERT INTO listings(url, title, price_pln, year, mileage_km, location, seller_type, date_scraped_utc)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(url) DO UPDATE SET
-          title=excluded.title,
-          price_pln=excluded.price_pln,
-          year=excluded.year,
-          mileage_km=excluded.mileage_km,
-          location=excluded.location,
-          seller_type=excluded.seller_type,
-          date_scraped_utc=excluded.date_scraped_utc
-        """
-        ,
-        (
-            l.url,
-            l.title,
-            l.price_pln,
-            l.year,
-            l.mileage_km,
-            l.location,
-            l.seller_type,
-            l.date_scraped_utc,
-        ),
-    )
-
-
-def export_csv(conn: sqlite3.Connection, out_path: str) -> int:
-    rows = conn.execute(
-        """
-        SELECT title, price_pln, year, mileage_km, location, seller_type, url, date_scraped_utc
-        FROM listings
-        ORDER BY date_scraped_utc DESC
-        """
-    ).fetchall()
-
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(
-            ["title", "price_pln", "year", "mileage_km", "location", "seller_type", "url", "date_scraped_utc"]
-        )
-        w.writerows(rows)
-    return len(rows)
-
-
-def accept_cookies_if_present(page) -> None:
-    # Otomoto often shows a consent modal; try several common Polish labels.
+def accept_cookies(page) -> None:
     candidates = [
+        "#onetrust-accept-btn-handler",
         "button:has-text('Akceptuję')",
         "button:has-text('Akceptuj')",
-        "button:has-text('Zaakceptuj')",
         "button:has-text('Zgadzam się')",
-        "button:has-text('Przejdź dalej')",
-        "button:has-text('OK')",
     ]
     for sel in candidates:
         try:
             loc = page.locator(sel).first
-            if loc.is_visible():
-                loc.click(timeout=1500)
-                break
+            if loc.is_visible(timeout=2000):
+                loc.click(timeout=3000)
+                time.sleep(1)
+                return
         except Exception:
             continue
 
 
-def guess_seller_type(card_text: str) -> str:
-    t = (card_text or "").lower()
-    # Heuristics based on common labels seen on Otomoto cards.
-    if "prywatn" in t:
-        return "private"
-    if "firma" in t or "dealer" in t or "salon" in t:
-        return "dealer"
-    return "unknown"
-
+# ---------------------------------------------------------------------------
+# Card extraction
+# ---------------------------------------------------------------------------
 
 def absolute_url(href: str) -> str:
     if not href:
@@ -177,112 +111,84 @@ def absolute_url(href: str) -> str:
         return href
     if href.startswith("/"):
         return "https://www.otomoto.pl" + href
-    return "https://www.otomoto.pl/" + href.lstrip("/")
+    return "https://www.otomoto.pl/" + href
 
 
-def extract_listing_from_card(card) -> Optional[Listing]:
-    # Try to be resilient to layout changes by using multiple fallbacks.
-    title = ""
+def extract_listing(card) -> Optional[Listing]:
     url = ""
-    price_text = ""
-    location_text = ""
-    year_text = ""
-    mileage_text = ""
+    title = ""
 
+    # Link and title
     try:
         a = card.locator("a[href*='/oferta/']").first
-        if a.count() == 0:
-            a = card.locator("a[href*='otomoto.pl']").first
         if a.count() > 0:
-            href = a.get_attribute("href") or ""
-            url = absolute_url(href)
-            title = (a.get_attribute("title") or a.inner_text() or "").strip()
+            url = absolute_url(a.get_attribute("href") or "")
     except Exception:
         pass
 
-    if not title:
-        try:
-            title = (card.locator("h2, h3").first.inner_text() or "").strip()
-        except Exception:
-            title = ""
-
-    # Price
     try:
-        # Often price is in element with currency; use broad text match.
-        price_text = (card.locator("text=/\\b(PLN|zł)\\b/").first.inner_text() or "").strip()
+        title = card.locator("h2").first.inner_text().strip()
     except Exception:
-        price_text = ""
-
-    # Year / mileage / location are typically in chips / params list
-    # Pull full text and parse from it as a fallback.
-    card_text = ""
-    try:
-        card_text = card.inner_text(timeout=1000) or ""
-    except Exception:
-        card_text = ""
-
-    # Year: first 4-digit that looks plausible
-    m_year = re.search(r"\b(19[5-9]\d|20[0-3]\d)\b", card_text)
-    if m_year:
-        year_text = m_year.group(0)
-
-    # Mileage: something like "123 456 km"
-    m_mileage = re.search(r"\b([\d\s\u00A0]{1,9})\s*km\b", card_text)
-    if m_mileage:
-        mileage_text = m_mileage.group(0)
-
-    # Location: try explicit selector first, else last line-ish heuristic
-    try:
-        location_text = (card.locator("p:has-text(',')").first.inner_text() or "").strip()
-    except Exception:
-        location_text = ""
-    if not location_text:
-        # Many cards contain city/region line; pick a short line with comma.
-        for line in [ln.strip() for ln in card_text.splitlines() if ln.strip()]:
-            if "," in line and 3 <= len(line) <= 60:
-                location_text = line
-                break
-
-    seller_type = guess_seller_type(card_text)
-    price_pln = parse_price_pln(price_text)
-    year = parse_year(year_text)
-    mileage_km = parse_mileage_km(mileage_text)
+        title = ""
 
     if not url:
         return None
 
+    # Parse everything from full card text
+    card_text = ""
+    try:
+        card_text = card.inner_text(timeout=2000) or ""
+    except Exception:
+        pass
+
+    # Price: look for "NNN NNN\nPLN" or "NNN NNN PLN" pattern
+    price_pln = None
+    m_price = re.search(r"([\d\s\u00A0]{3,12})\s*\n?\s*PLN", card_text)
+    if m_price:
+        price_pln = parse_int(m_price.group(1))
+
+    # Year: 4-digit year on its own line (2023+)
+    year = None
+    m_year = re.search(r"\b(202[3-9]|20[3-9]\d)\b", card_text)
+    if m_year:
+        year = int(m_year.group(1))
+
+    # Mileage: "23 000 km"
+    mileage_km = None
+    m_mileage = re.search(r"([\d\s\u00A0]{1,9})\s*km\b", card_text)
+    if m_mileage:
+        mileage_km = parse_int(m_mileage.group(0))
+
+    # Location: "City (Voivodeship)" pattern
+    location = ""
+    m_loc = re.search(r"([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż\s-]+)\s*\([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\)", card_text)
+    if m_loc:
+        location = m_loc.group(0).strip()
+
     return Listing(
-        title=title or "",
+        title=title or "Honda CR-V PHEV",
         price_pln=price_pln,
         year=year,
         mileage_km=mileage_km,
-        location=location_text or "",
-        seller_type=seller_type,
+        location=location,
         url=url,
         date_scraped_utc=utc_now_iso(),
     )
 
 
-def locate_listing_cards(page):
-    # Try multiple patterns; Otomoto frequently uses article cards.
-    candidates = [
-        "article:has(a[href*='/oferta/'])",
-        "[data-testid*='listing']",
-        "li:has(a[href*='/oferta/'])",
-    ]
-    for sel in candidates:
-        loc = page.locator(sel)
-        try:
-            if loc.count() >= 5:
-                return loc
-        except Exception:
-            continue
-    # Fallback (could be fewer on last page)
-    return page.locator("a[href*='/oferta/']").locator("xpath=ancestor::*[self::article or self::li][1]")
+def locate_cards(page):
+    # Otomoto wraps each listing in an <article> tag
+    loc = page.locator("article:has(a[href*='/oferta/'])")
+    try:
+        if loc.count() >= 1:
+            return loc
+    except Exception:
+        pass
+    # Fallback
+    return page.locator("a[href*='/oferta/']").locator("xpath=ancestor::article[1]")
 
 
 def get_next_page_url(page) -> Optional[str]:
-    # Prefer rel=next if present
     try:
         rel_next = page.locator("a[rel='next']").first
         if rel_next.count() > 0:
@@ -292,14 +198,11 @@ def get_next_page_url(page) -> Optional[str]:
     except Exception:
         pass
 
-    # Otherwise try a "next" pagination control
-    candidates = [
+    for sel in [
         "a[aria-label*='Następna']",
         "a:has-text('Następna')",
-        "a:has-text('Next')",
-        "button:has-text('Następna')",
-    ]
-    for sel in candidates:
+        "li[title='Next Page'] a",
+    ]:
         try:
             loc = page.locator(sel).first
             if loc.count() > 0 and loc.is_visible():
@@ -311,66 +214,81 @@ def get_next_page_url(page) -> Optional[str]:
     return None
 
 
-def scrape_all_pages() -> list[Listing]:
+# ---------------------------------------------------------------------------
+# Main scrape loop
+# ---------------------------------------------------------------------------
+
+def scrape_otomoto() -> list[Listing]:
     listings: list[Listing] = []
-    visited_urls: set[str] = set()
+    seen_urls: set[str] = set()
 
     with sync_playwright() as p:
-        # Chromium can occasionally crash in some constrained environments.
-        # Prefer Chromium, but fall back to Firefox to keep the scraper runnable.
         try:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
         except Exception:
             browser = p.firefox.launch(headless=True)
+
         context = browser.new_context(
             locale="pl-PL",
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 800},
         )
         page = context.new_page()
+        page.add_init_script(
+            'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+        )
 
         next_url: Optional[str] = SEARCH_URL
         page_no = 0
 
         while next_url:
             page_no += 1
-            page.goto(next_url, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(random_delay_seconds())
-            accept_cookies_if_present(page)
+            print(f"  Otomoto page {page_no}: {next_url}")
+            page.goto(next_url, wait_until="networkidle", timeout=60000)
+            time.sleep(random.uniform(3.0, 5.0))
 
-            # Wait a bit for cards
+            if page_no == 1:
+                accept_cookies(page)
+                time.sleep(2)
+
             try:
-                page.wait_for_selector("a[href*='/oferta/']", timeout=15000)
+                page.wait_for_selector("article a[href*='/oferta/']", timeout=15000)
             except PlaywrightTimeoutError:
-                # Might be blocked by anti-bot or layout changed; capture nothing but still attempt pagination.
-                pass
+                print("  [WARN] No listing cards found, page may be blocked")
+                break
 
-            cards = locate_listing_cards(page)
-            count = 0
+            cards = locate_cards(page)
             try:
                 n = cards.count()
             except Exception:
                 n = 0
 
+            count = 0
             for i in range(n):
                 try:
                     card = cards.nth(i)
-                    l = extract_listing_from_card(card)
-                    if not l:
+                    # Skip tiny articles (e.g. "Zobacz ogłoszenia" buttons)
+                    text_len = len(card.inner_text(timeout=1000) or "")
+                    if text_len < 50:
                         continue
-                    if l.url in visited_urls:
+                    listing = extract_listing(card)
+                    if not listing or listing.url in seen_urls:
                         continue
-                    visited_urls.add(l.url)
-                    listings.append(l)
+                    seen_urls.add(listing.url)
+                    listings.append(listing)
                     count += 1
                 except Exception:
                     continue
 
-            # Determine next page
+            print(f"  Found {count} listing(s) on page {page_no}")
+
             next_candidate = get_next_page_url(page)
             if not next_candidate or next_candidate == next_url:
                 break
@@ -382,47 +300,122 @@ def scrape_all_pages() -> list[Listing]:
     return listings
 
 
-def summary_prices(listings: Iterable[Listing]) -> tuple[int, Optional[int], Optional[int], Optional[float]]:
-    prices = [l.price_pln for l in listings if isinstance(l.price_pln, int)]
-    if not prices:
-        return 0, None, None, None
-    return len(prices), min(prices), max(prices), statistics.mean(prices)
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
 
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS otomoto_listings (
+          url TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          price_pln INTEGER,
+          year INTEGER,
+          mileage_km INTEGER,
+          location TEXT,
+          date_scraped_utc TEXT NOT NULL,
+          first_seen_utc TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_oto_price ON otomoto_listings(price_pln)"
+    )
+    conn.commit()
+
+
+def upsert_listing(conn: sqlite3.Connection, l: Listing) -> bool:
+    """Returns True if this is a new listing."""
+    existing = conn.execute(
+        "SELECT url FROM otomoto_listings WHERE url = ?", (l.url,)
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            """
+            UPDATE otomoto_listings SET
+              title=?, price_pln=?, year=?, mileage_km=?,
+              location=?, date_scraped_utc=?
+            WHERE url=?
+            """,
+            (l.title, l.price_pln, l.year, l.mileage_km,
+             l.location, l.date_scraped_utc, l.url),
+        )
+        return False
+    else:
+        conn.execute(
+            """
+            INSERT INTO otomoto_listings
+              (url, title, price_pln, year, mileage_km, location,
+               date_scraped_utc, first_seen_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (l.url, l.title, l.price_pln, l.year, l.mileage_km,
+             l.location, l.date_scraped_utc, l.date_scraped_utc),
+        )
+        return True
+
+
+def export_csv(conn: sqlite3.Connection, out_path: str) -> int:
+    rows = conn.execute(
+        """
+        SELECT title, price_pln, year, mileage_km, location,
+               url, date_scraped_utc, first_seen_utc
+        FROM otomoto_listings
+        ORDER BY first_seen_utc DESC
+        """
+    ).fetchall()
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "title", "price_pln", "year", "mileage_km", "location",
+            "url", "date_scraped_utc", "first_seen_utc",
+        ])
+        w.writerows(rows)
+    return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    ensure_output_dir()
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    scraped = scrape_all_pages()
+    print("=== Otomoto CR-V PHEV Scraper ===")
+    print(f"URL: {SEARCH_URL}\n")
+
+    scraped = scrape_otomoto()
 
     conn = sqlite3.connect(DB_PATH)
+    new_count = 0
     try:
         init_db(conn)
         for l in scraped:
-            upsert_listing(conn, l)
+            if upsert_listing(conn, l):
+                new_count += 1
         conn.commit()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = os.path.join(OUTPUT_DIR, f"listings_{timestamp}.csv")
-        export_csv(conn, csv_path)
-        export_csv(conn, os.path.join(OUTPUT_DIR, "listings_latest.csv"))
+        csv_path = os.path.join(OUTPUT_DIR, f"otomoto_{timestamp}.csv")
+        total = export_csv(conn, csv_path)
+        export_csv(conn, os.path.join(OUTPUT_DIR, "otomoto_latest.csv"))
     finally:
         conn.close()
 
-    priced_count, pmin, pmax, pavg = summary_prices(scraped)
-    total = len(scraped)
-
-    print(f"Scraped listings: {total}")
-    if priced_count == 0:
-        print("Price summary: no numeric prices found.")
-    else:
-        print(
-            "Price summary (PLN) over numeric prices: "
-            f"count={priced_count}, min={pmin}, max={pmax}, avg={pavg:.2f}"
-        )
-    print(f"Saved SQLite: {DB_PATH}")
-    print(f"Saved CSV: {csv_path}")
+    print(f"\n{'='*60}")
+    print(f"Total Otomoto listings found: {len(scraped)}")
+    print(f"New listings (not seen before): {new_count}")
+    if scraped:
+        prices = [l.price_pln for l in scraped if l.price_pln]
+        if prices:
+            print(f"Price range: {min(prices):,} - {max(prices):,} PLN")
+    print(f"DB: {DB_PATH}")
+    print(f"CSV: {os.path.join(OUTPUT_DIR, 'otomoto_latest.csv')}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
     main()
-

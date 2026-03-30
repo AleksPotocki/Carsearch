@@ -76,27 +76,14 @@ class Dealer:
 
 
 def load_dealers(csv_path: str = CSV_DEALERS) -> list[Dealer]:
-    """Parse the dealer CSV (Google Sheets export with nested quotes)."""
+    """Parse the dealer CSV."""
     dealers: list[Dealer] = []
     with open(csv_path, "r", encoding="utf-8") as f:
-        for line_no, raw_line in enumerate(f):
-            s = raw_line.strip()
-            if not s:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) < 4:
                 continue
-            # Strip outer quotes wrapping the entire line
-            if s.startswith('"') and s.endswith('"'):
-                s = s[1:-1]
-            s = s.replace('""', '"')
-            # Pattern: name,"city","url1","url2"
-            m = re.match(r'(.+?),"(.+?)","(.+?)","(.+?)"', s)
-            if not m:
-                continue
-            name, city, url_od_reki, url_uzywane = (
-                m.group(1),
-                m.group(2),
-                m.group(3),
-                m.group(4),
-            )
+            name, city, url_od_reki, url_uzywane = row[0], row[1], row[2], row[3]
             # Skip header row
             if "nazwa" in name.lower() and "dealer" in name.lower():
                 continue
@@ -236,21 +223,178 @@ def scrape_honda_cms_page(
 
 
 # ---------------------------------------------------------------------------
-# Scrape Odyssey dealer (different template)
+# Scrape Otomoto dealer inventory pages (e.g. cmcmotors.otomoto.pl/inventory)
 # ---------------------------------------------------------------------------
 
-def scrape_odyssey_page(
+def scrape_otomoto_inventory(
     url: str, dealer: Dealer, source_page: str
 ) -> list[DealerListing]:
-    """Scrape the Odyssey dealer which uses a WordPress-based template."""
+    """Scrape an Otomoto dealer inventory page."""
     listings: list[DealerListing] = []
     soup = fetch_page(url)
     if not soup:
         return listings
 
-    # Odyssey uses a different layout - look for car cards with links
-    # containing "cr-v" or general car listing patterns
-    for card in soup.select("article, .car-item, .vehicle-card, .product-card, .entry"):
+    # Cards use ooa- prefixed classes; find all links to /oferta/ within cards
+    for card in soup.select("a[href*='/oferta/']"):
+        parent = card.find_parent("div")
+        if not parent:
+            continue
+        card_text = parent.get_text(" ", strip=True)
+        if not CRV_PATTERN.search(card_text):
+            continue
+
+        listing_url = urljoin(url, card.get("href", ""))
+        title = ""
+        for el in parent.select("h2, h3, [class*='1v6v2we']"):
+            title = el.get_text(strip=True)
+            break
+        if not title:
+            title = card.get_text(strip=True)
+
+        price_text = ""
+        for el in parent.select("[class*='price'], [class*='1kbkia7']"):
+            price_text = el.get_text(strip=True)
+            break
+        if not price_text:
+            m = re.search(r"([\d\s]{3,12})\s*PLN", card_text)
+            if m:
+                price_text = m.group(0)
+
+        listings.append(_make_listing(
+            dealer, title, price_text, card_text, listing_url, source_page,
+        ))
+
+    return listings
+
+
+# ---------------------------------------------------------------------------
+# Scrape modeleodreki.honda.pl (national Honda "od ręki" catalog)
+# ---------------------------------------------------------------------------
+
+def scrape_honda_odreki_national(
+    url: str, dealer: Dealer, source_page: str
+) -> list[DealerListing]:
+    """Scrape the national Honda 'od ręki' catalog page."""
+    listings: list[DealerListing] = []
+    page_url: str | None = url
+    seen_urls: set[str] = set()
+
+    while page_url:
+        soup = fetch_page(page_url)
+        if not soup:
+            break
+
+        # This page uses the same Honda CMS c-teaser cards
+        cards = soup.select("div.c-teaser")
+        for card in cards:
+            title_el = card.select_one("h3.c-teaser__title")
+            title = title_el.get_text(strip=True) if title_el else ""
+
+            card_text = card.get_text(" ", strip=True)
+            if not is_crv(title, card_text):
+                continue
+
+            price_el = card.select_one("p.c-teaser__price")
+            price_text = price_el.get_text(strip=True) if price_el else ""
+
+            link_el = card.select_one("div.c-teaser__cta a.c-btn")
+            href = link_el.get("href", "") if link_el else ""
+            listing_url = urljoin(page_url, href) if href else ""
+
+            if listing_url in seen_urls:
+                continue
+            seen_urls.add(listing_url)
+
+            engine_type = extract_spec(card, "silnik")
+            trim = extract_spec(card, "wersja")
+            year_text = extract_spec(card, "rok")
+
+            listings.append(DealerListing(
+                dealer_name=dealer.name,
+                city=dealer.city,
+                title=title,
+                price_pln=parse_price(price_text),
+                year=parse_year(year_text) or parse_year(card_text),
+                engine_type=engine_type,
+                trim=trim,
+                is_phev=detect_phev(title, engine_type, card_text),
+                url=listing_url,
+                source_page=source_page,
+                date_scraped_utc=datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat(),
+            ))
+
+        # Pagination
+        next_link = soup.select_one("a.c-pagination__btn--next")
+        if next_link and next_link.get("href"):
+            next_url = urljoin(page_url, next_link["href"])
+            if next_url == page_url:
+                break
+            page_url = next_url
+            time.sleep(random.uniform(1.0, 2.0))
+        else:
+            break
+
+    return listings
+
+
+# ---------------------------------------------------------------------------
+# Scrape Karlik used cars platform
+# ---------------------------------------------------------------------------
+
+def scrape_karlik_used(
+    url: str, dealer: Dealer, source_page: str
+) -> list[DealerListing]:
+    """Scrape Karlik's used car platform."""
+    listings: list[DealerListing] = []
+    soup = fetch_page(url)
+    if not soup:
+        return listings
+
+    # Look for car cards with links to /pl/samochod/
+    for link in soup.select("a[href*='/samochod/']"):
+        card_text = ""
+        parent = link.find_parent("div") or link.find_parent("article")
+        if parent:
+            card_text = parent.get_text(" ", strip=True)
+        else:
+            card_text = link.get_text(" ", strip=True)
+
+        if not CRV_PATTERN.search(card_text):
+            continue
+
+        listing_url = urljoin(url, link.get("href", ""))
+        title = link.get_text(strip=True)
+
+        price_text = ""
+        if parent:
+            price_el = parent.select_one("h4, [class*='price']")
+            if price_el:
+                price_text = price_el.get_text(strip=True)
+
+        listings.append(_make_listing(
+            dealer, title, price_text, card_text, listing_url, source_page,
+        ))
+
+    return listings
+
+
+# ---------------------------------------------------------------------------
+# Scrape Odyssey / WordPress dealer pages
+# ---------------------------------------------------------------------------
+
+def scrape_wordpress_dealer(
+    url: str, dealer: Dealer, source_page: str
+) -> list[DealerListing]:
+    """Scrape WordPress-based dealer pages."""
+    listings: list[DealerListing] = []
+    soup = fetch_page(url)
+    if not soup:
+        return listings
+
+    for card in soup.select("article, .car-item, .vehicle-card, .product-card, .entry, .listing-item"):
         card_text = card.get_text(" ", strip=True)
         if not CRV_PATTERN.search(card_text):
             continue
@@ -261,34 +405,61 @@ def scrape_odyssey_page(
             title = title_el.get_text(strip=True)
 
         link_el = card.select_one("a[href]")
-        listing_url = ""
-        if link_el:
-            listing_url = urljoin(url, link_el.get("href", ""))
+        listing_url = urljoin(url, link_el.get("href", "")) if link_el else url
 
         price_text = ""
         price_el = card.select_one(".price, .car-price, [class*='price']")
         if price_el:
             price_text = price_el.get_text(strip=True)
 
-        listings.append(
-            DealerListing(
-                dealer_name=dealer.name,
-                city=dealer.city,
-                title=title or "CR-V (Odyssey)",
-                price_pln=parse_price(price_text),
-                year=parse_year(card_text),
-                engine_type="",
-                trim="",
-                is_phev=detect_phev(title, "", card_text),
-                url=listing_url or url,
-                source_page=source_page,
-                date_scraped_utc=datetime.now(timezone.utc)
-                .replace(microsecond=0)
-                .isoformat(),
-            )
-        )
+        listings.append(_make_listing(
+            dealer, title or "CR-V", price_text, card_text, listing_url, source_page,
+        ))
 
     return listings
+
+
+# ---------------------------------------------------------------------------
+# Helper to build a DealerListing
+# ---------------------------------------------------------------------------
+
+def _make_listing(
+    dealer: Dealer, title: str, price_text: str, card_text: str,
+    listing_url: str, source_page: str,
+) -> DealerListing:
+    return DealerListing(
+        dealer_name=dealer.name,
+        city=dealer.city,
+        title=title,
+        price_pln=parse_price(price_text),
+        year=parse_year(card_text),
+        engine_type="",
+        trim="",
+        is_phev=detect_phev(title, "", card_text),
+        url=listing_url,
+        source_page=source_page,
+        date_scraped_utc=datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# URL-based scraper routing
+# ---------------------------------------------------------------------------
+
+def _pick_scraper(url: str):
+    """Return the appropriate scraper function based on the URL pattern."""
+    if "otomoto.pl/inventory" in url:
+        return scrape_otomoto_inventory
+    if "modeleodreki.honda.pl" in url:
+        return scrape_honda_odreki_national
+    if "uzywane.karlik" in url:
+        return scrape_karlik_used
+    if "odyssey-dealer-group.pl" in url:
+        return scrape_wordpress_dealer
+    # Default: standard Honda CMS
+    return scrape_honda_cms_page
 
 
 # ---------------------------------------------------------------------------
@@ -400,33 +571,15 @@ def scrape_all_dealers() -> tuple[list[DealerListing], int]:
     for dealer in dealers:
         print(f"\n--- {dealer.name} ({dealer.city}) ---")
 
-        is_odyssey = "odyssey" in dealer.name.lower()
-
-        # Scrape "od ręki" page
-        if dealer.url_od_reki:
-            print(f"  Scraping od ręki: {dealer.url_od_reki}")
-            if is_odyssey:
-                found = scrape_odyssey_page(
-                    dealer.url_od_reki, dealer, "od_reki"
-                )
-            else:
-                found = scrape_honda_cms_page(
-                    dealer.url_od_reki, dealer, "od_reki"
-                )
-            print(f"  Found {len(found)} CR-V listing(s)")
-            all_listings.extend(found)
-
-        # Scrape "używane" page
-        if dealer.url_uzywane:
-            print(f"  Scraping używane: {dealer.url_uzywane}")
-            if is_odyssey:
-                found = scrape_odyssey_page(
-                    dealer.url_uzywane, dealer, "uzywane"
-                )
-            else:
-                found = scrape_honda_cms_page(
-                    dealer.url_uzywane, dealer, "uzywane"
-                )
+        for label, url, source in [
+            ("od ręki", dealer.url_od_reki, "od_reki"),
+            ("używane", dealer.url_uzywane, "uzywane"),
+        ]:
+            if not url:
+                continue
+            print(f"  Scraping {label}: {url}")
+            scraper_fn = _pick_scraper(url)
+            found = scraper_fn(url, dealer, source)
             print(f"  Found {len(found)} CR-V listing(s)")
             all_listings.extend(found)
 

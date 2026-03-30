@@ -27,14 +27,17 @@ jobs:
           pip install requests beautifulsoup4 playwright
           playwright install chromium --with-deps
 
-      - name: Run all scrapers
-        run: python -m scraper.run_all
+      - name: Run dealer scraper
+        run: python -m scraper.honda_dealers
+
+      - name: Run Otomoto scraper
+        continue-on-error: true
+        run: python -m scraper.otomoto_crv_phev
 
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add output/dealers.db output/dealers_latest.csv output/otomoto.db output/otomoto_latest.csv
-          # Only commit if there are changes
+          git add output/dealers.db output/dealers_latest.csv output/otomoto.db output/otomoto_latest.csv || true
           git diff --staged --quiet || git commit -m "scrape: $(date -u +%Y-%m-%d) results"
-          git push
+          git push || true

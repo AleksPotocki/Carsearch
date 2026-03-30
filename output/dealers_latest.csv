@@ -1,0 +1,17 @@
+dealer_name,city,title,price_pln,year,engine_type,trim,is_phev,url,source_page,date_scraped_utc,first_seen_utc
+Park,Łódź,Honda CR-V,209900,2025,Hybryda,Advance,0,https://www.hondapark.pl/pl/samochody/samochody-od-reki/oferta/1161,od_reki,2026-03-30T13:42:59+00:00,2026-03-30T13:42:59+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/417,od_reki,2026-03-30T13:42:48+00:00,2026-03-30T13:42:42+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/415,od_reki,2026-03-30T13:42:48+00:00,2026-03-30T13:42:42+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/331,od_reki,2026-03-30T13:42:48+00:00,2026-03-30T13:42:42+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/435,od_reki,2026-03-30T13:42:46+00:00,2026-03-30T13:42:39+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,189900,2025,Hybryda,Elegance AWD,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/434,od_reki,2026-03-30T13:42:46+00:00,2026-03-30T13:42:39+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/433,od_reki,2026-03-30T13:42:46+00:00,2026-03-30T13:42:39+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/1260,od_reki,2026-03-30T13:42:44+00:00,2026-03-30T13:42:37+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/1259,od_reki,2026-03-30T13:42:44+00:00,2026-03-30T13:42:37+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/1258,od_reki,2026-03-30T13:42:44+00:00,2026-03-30T13:42:37+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,209900,2025,Hybryda,Advance,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/1257,od_reki,2026-03-30T13:42:44+00:00,2026-03-30T13:42:37+00:00
+Kolaczek Kraków,Wieliczka,Honda CR-V,189900,2025,Hybryda,,0,https://hondakolaczek.pl/pl/samochody/samochody-od-reki/oferta/1256,od_reki,2026-03-30T13:42:44+00:00,2026-03-30T13:42:37+00:00
+Honda Plaza,Warszawa,Honda CR-V,213400,2024,Hybryda,Elegance AWD,0,https://www.hondaplaza.pl/pl/samochody/samochody-od-reki/oferta/473,od_reki,2026-03-30T13:42:28+00:00,2026-03-30T13:42:28+00:00
+Honda Plaza,Warszawa,Honda CR-V,233400,2024,Hybryda,Advance,0,https://www.hondaplaza.pl/pl/samochody/samochody-od-reki/oferta/464,od_reki,2026-03-30T13:42:28+00:00,2026-03-30T13:42:28+00:00
+Honda Plaza,Warszawa,Honda CR-V,205900,2024,Hybryda,Elegance 2WD,0,https://www.hondaplaza.pl/pl/samochody/samochody-od-reki/oferta/462,od_reki,2026-03-30T13:42:28+00:00,2026-03-30T13:42:28+00:00
+Honda Plaza,Warszawa,Honda CR-V e:PHEV,233500,2024,Hybryda Plug-in,Advance Tech,1,https://www.hondaplaza.pl/pl/samochody/samochody-od-reki/oferta/238,od_reki,2026-03-30T13:42:28+00:00,2026-03-30T13:42:28+00:00

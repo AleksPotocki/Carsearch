@@ -1,0 +1,38 @@
+name: Daily Honda CR-V Scrape
+
+on:
+  schedule:
+    # Every day at 9:00 AM Warsaw time (CET=UTC+1, CEST=UTC+2)
+    # Using 7:00 UTC to cover CEST (summer = 9:00), in winter it'll run at 8:00 CET
+    - cron: "0 7 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run dealer scraper
+        run: python -m scraper.honda_dealers
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/dealers.db output/dealers_latest.csv
+          # Only commit if there are changes
+          git diff --staged --quiet || git commit -m "scrape: $(date -u +%Y-%m-%d) dealer results"
+          git push
